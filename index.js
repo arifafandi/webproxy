@@ -1,39 +1,54 @@
-const express = require('express');
-const httpProxy = require('http-proxy');
-const fs = require('fs');
+const http = require('http');
+const https = require('https');
+const faker = require('faker');
+const url = require('url');
 
-const app = express();
-const proxy = httpProxy.createProxyServer();
+const server = http.createServer((req, res) => {
+  const parsedUrl = url.parse(req.url, true);
+  const targetDomain = parsedUrl.query.request;
 
-// Function to log errors to a file
-function logError(error) {
-  const timestamp = new Date().toISOString();
-  const logMessage = `${timestamp}: ${error.stack}\n`;
+  if (!targetDomain) {
+    res.statusCode = 400;
+    res.end('Invalid request: target domain is missing');
+    return;
+  }
 
-  fs.appendFile('error.log', logMessage, (err) => {
-    if (err) {
-      console.error('Error writing to error.log:', err);
-    }
+  // Generate a random IP address for X-Forwarded-For header
+  const randomIP = faker.internet.ip();
+
+  // Clone the request headers to avoid modifying the original object
+  const modifiedHeaders = { ...req.headers };
+
+  // Modify the X-Forwarded-For header with the random IP address
+  modifiedHeaders['x-forwarded-for'] = randomIP;
+
+  // Determine the protocol (http or https) based on the target domain
+  const protocol = targetDomain.startsWith('https://') ? https : http;
+
+  // Forward the modified request
+  const proxyReq = protocol.request(targetDomain, {
+    method: req.method,
+    headers: modifiedHeaders
+  }, (proxyRes) => {
+    // Set the response headers
+    res.writeHead(proxyRes.statusCode, proxyRes.headers);
+
+    // Forward the response from the target domain to the client
+    proxyRes.pipe(res);
   });
-}
 
-app.use('/', (req, res) => {
-  // Spoofed IP address for educational purposes
-  const spoofedIP = '192.168.1.100'; // Replace with any IP you want
-
-  // Set up proxy headers with the spoofed IP
-  req.headers['x-forwarded-for'] = spoofedIP;
-
-  const target = req.query.request;
-
-  // Proxy the request using the spoofed IP
-  proxy.web(req, res, { target }, (error) => {
-    console.error('An error occurred:', error);
-    logError(error);
-    res.sendStatus(500); // Send an error response to the client
+  // Handle errors during the proxy request
+  proxyReq.on('error', (err) => {
+    console.error('Proxy request error:', err);
+    res.statusCode = 500;
+    res.end('Proxy request error');
   });
+
+  // Forward the request body to the target domain
+  req.pipe(proxyReq);
 });
 
-app.listen(3000, () => {
-  console.log('Proxy server is running on port 3000');
+const port = 3000;
+server.listen(port, () => {
+  console.log(`Proxy server listening on port ${port}`);
 });
